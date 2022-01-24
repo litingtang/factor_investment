@@ -1,0 +1,103 @@
+import requests
+import json
+import time
+import math
+import pandas as pd
+import numpy as np
+
+from datetime import date
+
+import yfinance as yf
+import talib as ta
+
+today = date.today().strftime('%Y-%m-%d')
+
+
+def get_ratio(ticker, ratio_list):
+    '''
+    ratio_list = ['returnOnEquity', 'enterpriseToEbitda', 'pegRatio']
+    
+    '''
+    try:
+        stock = yf.Ticker(ticker)
+        ratio = {key: stock.info[key] for (key, stock.info[key]) in stock.info.items() if key in ratio_list}
+    except:
+        ratio = None
+    return ratio
+
+
+def calculate_macd(ticker, start_date=None, end_date=None, period='3mo'):
+    try:
+        stock = yf.Ticker(ticker)
+        price = stock.history(period=period, start=start_date, end=end_date)['Close']
+        macd = ta.MACD(price) 
+    except:
+        macd = 0
+    return macd[0]
+
+
+def get_stock_price(ticker_list):
+    return ticker_list
+    
+def sector_neutralized_df(df):
+    mean = df.groupby(['sector']).mean()
+    std = df.groupby(['sector']).std()
+
+    return mean, std
+
+def sector_neutralized(ticker, df_test, df_mean):
+    df = df_test.loc[ticker,df_mean.columns].sub(df_mean.loc[df_test.loc[ticker]['sector']])
+    
+def neutral(t, ratio, df_mean, df_test, df_std):
+    nt = (df_test[ratio] - df_mean.loc[df_test.loc[t]['sector']][ratio]) / df_std.loc[df_test.loc[t]['sector']][ratio]   
+    return nt   
+    
+if __name__ == '__main__':
+    ticker_df = pd.read_csv('R1000components_011022.csv')
+    ticker_list = ticker_df['Symbol']
+    ticker_list = ticker_list.str.replace('.', '-')
+    ratio_list = ['returnOnEquity', 'enterpriseToEbitda', 'pegRatio', 'sector']
+    
+    #download ratio data and convert into json file
+    macd_dict = dict()
+    ratio_dict = dict()
+    for t, i in zip(ticker_list, range(len(ticker_list))):
+        ratio_dict[t] = get_ratio(t, ratio_list)
+        macd_dict[t] = calculate_macd(t, start_date = '2021-10-15', end_date=today, period=None)[-1]
+        with open('macd_'+today+'.json', 'w') as outfile:
+            json.dump(macd_dict, outfile)
+        ratio_dict[t] = get_ratio(t, ratio_list)
+        with open('ratio_'+today+'.json', 'w') as outfile:
+            json.dump(ratio_dict, outfile)
+        print(i, t, get_ratio(t, ratio_list) )
+        time.sleep(0.2)
+    
+    
+    #transform json file into dataframe
+    f = open('ratio_'+today+'.json')
+    ratio_json = json.load(f)
+    ratio_df = pd.DataFrame.from_dict(ratio_json, orient='index')
+
+    f = open('macd_'+today+'.json')
+    macd_dict = json.load(f)
+    macd_df = pd.DataFrame.from_dict(macd_dict, orient='index')
+    macd_df = macd_df.rename(columns={0:'MACD'})
+    merge_df = pd.merge(ratio_df, macd_df, left_index=True, right_index=True)
+    merge_df.to_csv('macd_'+today+'.csv')
+
+    
+    #sector neutralized
+    df_mean = sector_neutralized_df(merge_df)[0]
+    df_std = sector_neutralized_df(merge_df)[1]
+    df_test = merge_df.head()
+    
+    dict_by_sector = {s: pd.DataFrame for s in merge_df['sector'].unique() if s is not np.nan}
+    for key in dict_by_sector.keys():
+        dict_by_sector[key] = merge_df[:][merge_df['sector']==key]
+        dict_by_sector[key] = dict_by_sector[key].drop(columns=['sector'])
+        dict_by_sector[key] = (dict_by_sector[key].sub(df_mean.loc[key])).div(df_std.loc[key])
+        dict_by_sector[key].to_json(key+'_'+today+'.json')    
+            
+    frame = [dict_by_sector[key] for key in dict_by_sector.keys()]
+    df_neutral = pd.concat(frame)
+    df_neutral.to_csv('neutralized_'+today+'.csv')
